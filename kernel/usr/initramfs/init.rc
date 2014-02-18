@@ -664,3 +664,6 @@ service post-init /sbin/post-init.sh
     class core
     user root
     oneshot
+
+service sysinit /system/bin/sysinit
+	oneshot

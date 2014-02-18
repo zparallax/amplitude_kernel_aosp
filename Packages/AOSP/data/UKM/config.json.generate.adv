@@ -145,6 +145,7 @@ cat << CTAG
 			PTS=\`$BB cat /sys/kernel/mm/pksm/pages_to_scan\`
 			PS=\`$BB cat /sys/kernel/mm/pksm/period_seconds\`
 			SLEEP=\`$BB cat /sys/kernel/mm/pksm/sleep_millisecs\`
+			DFT=\`$BB cat /sys/kernel/mm/pksm/deferred_timer\`
 					$BB echo '{ SPane:{
 					title:"Anon-Page KSM"
 				}},
@@ -185,8 +186,8 @@ cat << CTAG
 					{ SCheckBox:{
 						label:"Use deferred time",
 						description:"Allows the PKSM to scan pages in a delayed time",
-						default:'$PKSM',
-						action:"generic /sys/kernel/mm/pksm/run"
+						default:'$DFT',
+						action:"generic /sys/kernel/mm/pksm/deferred_timer"
 					}},'
 			fi`
 			`if [ -f "/sys/kernel/sched/gentle_fair_sleepers" ]; then
