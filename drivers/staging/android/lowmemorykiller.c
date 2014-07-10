@@ -170,12 +170,25 @@ static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 	bool flag = 0;
 #endif
 
+#ifdef CONFIG_ZSWAP
+struct sysinfo si;
+#endif
+
 	if (nr_to_scan > 0) {
 		if (mutex_lock_interruptible(&scan_mutex) < 0)
 			return 0;
 	}
 
+<<<<<<< HEAD
 	other_free = global_page_state(NR_FREE_PAGES);
+=======
+#ifdef CONFIG_ZSWAP
+si_swapinfo(&si);
+if (!current_is_kswapd())
+#endif
+
+	lowmem_notif_sc.gfp_mask = sc->gfp_mask;
+>>>>>>> f798416...   lowmemorykiller: zswap implementation from linux 3.7+
 
 	nr_cma_free = global_page_state(NR_FREE_CMA_PAGES);
 #ifdef CONFIG_ZSWAP
@@ -204,6 +217,13 @@ static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 		other_file -= global_page_state(NR_SHMEM) + total_swapcache_pages;
 	else
 		other_file = 0;
+
+#if defined(CONFIG_MACH_KLTE_KOR)
+#ifdef CONFIG_ZSWAP
+if (current_is_kswapd() && other_file < lowmem_minfree[1])
+other_free -= global_page_state(NR_FREE_CMA_PAGES);
+#endif
+#endif
 
 	if (lowmem_adj_size < array_size)
 		array_size = lowmem_adj_size;
