@@ -461,12 +461,8 @@ static void pp_ad_bypass_config(struct mdss_ad_info *ad,
 				struct mdss_mdp_ctl *ctl, u32 num, u32 *opmode);
 static int mdss_mdp_ad_setup(struct msm_fb_data_type *mfd);
 static void pp_ad_cfg_lut(char __iomem *addr, u32 *data);
-<<<<<<< HEAD
 static u32 pp_ad_attenuate_bl(u32 bl, struct mdss_ad_info *ad);
-=======
-static int pp_ad_attenuate_bl(u32 bl, u32 *bl_out, struct msm_fb_data_type *mfd);
 static struct msm_fb_data_type *mdss_get_mfd_from_index(int index);
->>>>>>> d4f9974... Added gamma control
 static int pp_num_to_side(struct mdss_mdp_ctl *ctl, u32 num);
 static inline bool pp_sts_is_enabled(u32 sts, int side);
 static inline void pp_sts_set_split_bits(u32 *sts, u32 bits);
@@ -1818,7 +1814,6 @@ int mdss_mdp_pp_resume(struct mdss_mdp_ctl *ctl, u32 dspp_num)
 	return 0;
 }
 
-
 void mdss_mdp_pp_kcal_enable(bool enable)
 {
 	u32 disp_num = 0;
@@ -1905,7 +1900,6 @@ void mdss_mdp_pp_kcal_invert(int enable)
 
 	mdss_mdp_igc_lut_config(igc_config, &copyback, copy_from_kernel);
 }
-
 
 int mdss_mdp_pp_init(struct device *dev)
 {
