@@ -4,7 +4,10 @@
  * Based on the Conservative governor by:
  *
  *    Copyright (C)  2001 Russell King
- *              (C)  2015 Apolo Lopez <zparallax1@gmail.com>
+ *				(C)  2003 Venkatesh Pallipadi <venkatesh.pallipadi@intel.com>.
+ *                      Jun Nakajima <jun.nakajima@intel.com>
+ *            	(C)  2013 The Linux Foundation. All rights reserved.
+ *              (C)  2015 zparallax <zparallax1@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -34,7 +37,6 @@
 #ifdef CONFIG_POWERSUSPEND
 #include <linux/powersuspend.h>
 #endif
-
 /*
  * dbs is used in this file as a shortform for demandbased switching
  * It helps to keep variable names smaller, simpler
@@ -53,28 +55,15 @@
  * this governor will not work.
  * All times here are in uS.
  */
-#define MIN_SAMPLING_RATE_RATIO			(2)
-
-struct delayed_work stop_wakeup_kick_work;
-
-#define LATENCY_MULTIPLIER				(1000)
-#define MIN_LATENCY_MULTIPLIER			(100)
-#define DEF_SAMPLING_DOWN_FACTOR		(1)
-#define MAX_SAMPLING_DOWN_FACTOR		(10)
-#define TRANSITION_LATENCY_LIMIT		(10 * 1000 * 1000)
-#define DEF_MAX_SCREEN_ON				(2457600)
-#define DEF_MAX_SCREEN_OFF				(1190400)
-#define DEF_MIN_SCREEN_ON				(300000)
-#define DEF_MIN_SCREEN_OFF				(300000)
-#define DEF_WAKEUP_KICK_FREQ			(1190400)
-#define SCREEN_ON	 					(1)		/* default, consider we boot with screen on */
-#define SCREEN_OFF 						(0)
-#define WAKEUP_KICK_DISABLED			(0)
-#define WAKEUP_KICK_INACTIVE			(0)
-#define WAKEUP_KICK_ACTIVE				(1)
-#define WAKEUP_KICK_DELAY_MAX			(10000)	/* Don't allow for more than 10 seconds */
+#define DEF_MIN_SAMPLING_RATE_RATIO			(2)
 
 static unsigned int min_sampling_rate;
+
+#define DEF_LATENCY_MULTIPLIER				(1000)
+#define DEF_MIN_LATENCY_MULTIPLIER			(100)
+#define DEF_SAMPLING_DOWN_FACTOR			(1)
+#define DEF_MAX_SAMPLING_DOWN_FACTOR		(10)
+#define DEF_TRANSITION_LATENCY_LIMIT		(10 * 1000 * 1000)
 
 static void do_dbs_timer(struct work_struct *work);
 
@@ -104,6 +93,8 @@ static unsigned int dbs_enable;	/* number of CPUs using this policy */
  */
 static DEFINE_MUTEX(dbs_mutex);
 
+static struct workqueue_struct *dbs_wq;
+
 static struct dbs_tuners {
 	unsigned int sampling_rate;
 	unsigned int sampling_down_factor;
@@ -111,34 +102,13 @@ static struct dbs_tuners {
 	unsigned int down_threshold;
 	unsigned int ignore_nice;
 	unsigned int freq_step;
-	unsigned int max_screen_on;
-	unsigned int max_screen_off;
-	unsigned int min_screen_on;
-	unsigned int min_screen_off;
-	unsigned int wakeup_kick_freq;     /* default to limit behaviour */
-	unsigned int wakeup_kick_delay;
-	unsigned int wakeup_kick_active;
-	unsigned int current_limit_max;
-	unsigned int current_limit_min;
-	unsigned int current_screen_state;            /* default to screen on */
 } dbs_tuners_ins = {
 	.up_threshold = DEF_FREQUENCY_UP_THRESHOLD,
 	.down_threshold = DEF_FREQUENCY_DOWN_THRESHOLD,
 	.sampling_down_factor = DEF_SAMPLING_DOWN_FACTOR,
 	.ignore_nice = 0,
 	.freq_step = 5,
-	.max_screen_on = DEF_MAX_SCREEN_ON,
-	.max_screen_off = DEF_MAX_SCREEN_OFF,
-	.min_screen_on = DEF_MIN_SCREEN_ON,
-	.min_screen_off = DEF_MIN_SCREEN_OFF,
-	.wakeup_kick_freq = DEF_WAKEUP_KICK_FREQ,
-	.wakeup_kick_delay = WAKEUP_KICK_DISABLED,
-	.wakeup_kick_active = WAKEUP_KICK_INACTIVE,
-	.current_limit_max = DEF_MAX_SCREEN_ON,
-	.current_limit_min = DEF_MIN_SCREEN_ON,
-	.current_screen_state = SCREEN_ON,
 };
-
 
 static inline u64 get_cpu_idle_time_jiffy(unsigned int cpu, u64 *wall)
 {
@@ -171,120 +141,6 @@ static inline u64 get_cpu_idle_time(unsigned int cpu, u64 *wall, int io_busy)
 		idle_time += get_cpu_iowait_time_us(cpu, wall);
 	return idle_time;
 }
-
-
-void update_scaling_limits(unsigned int freq_min, unsigned int freq_max)
-{
-	int cpu, ret;
-	struct cpufreq_policy *policy, new_policy;
-
-	for_each_possible_cpu(cpu) {
-        policy = cpufreq_cpu_get(cpu);
-        if (!cpu_online(policy->cpu))
-            return;
-		if (policy != NULL) {
-             ret = cpufreq_get_policy(&new_policy, policy->cpu);
-             policy->user_policy.min = new_policy.min = freq_min;
-             policy->user_policy.max = new_policy.max = freq_max;
-		}
-	}
-}
-
-/* Update limits in cpufreq */
-void reapply_limits(void)
-{
-	#ifdef CPUFREQ_WAVE_DEBUG
-	pr_info("[WAVE] reapply_hard_limits - before : min = %u / max = %u \n",
-			current_limit_min,
-			current_limit_max
-		);
-	#endif
-
-	/* Recalculate the currently applicable min/max */
-	if (dbs_tuners_ins.current_screen_state == SCREEN_ON) {
-
-		if(dbs_tuners_ins.wakeup_kick_active == WAKEUP_KICK_ACTIVE) {
-
-			dbs_tuners_ins.current_limit_min  = dbs_tuners_ins.wakeup_kick_freq;
-			dbs_tuners_ins.current_limit_max  = max(dbs_tuners_ins.max_screen_on, min(dbs_tuners_ins.max_screen_on, dbs_tuners_ins.wakeup_kick_freq));
-
-		} else {
-
-			dbs_tuners_ins.current_limit_min  = dbs_tuners_ins.min_screen_on;
-			dbs_tuners_ins.current_limit_max  = dbs_tuners_ins.max_screen_on;
-
-		}
-
-	} else {
-
-		dbs_tuners_ins.current_limit_min  = dbs_tuners_ins.min_screen_off;
-		dbs_tuners_ins.current_limit_max  = dbs_tuners_ins.max_screen_off;
-
-	}
-
-	#ifdef CPUFREQ_WAVE_DEBUG
-	pr_info("[WAVE] reapply_hard_limits - after : min = %u / max = %u \n",
-			dbs_tuners_ins.current_limit_min,
-			dbs_tuners_ins.current_limit_max
-		);
-	#endif
-	update_scaling_limits(dbs_tuners_ins.current_limit_min, dbs_tuners_ins.current_limit_max);
-}
-
-#ifdef CONFIG_POWERSUSPEND
-/* Powersuspend */
-static void cpufreq_wave_suspend(struct power_suspend * h)
-{
-	#ifdef CPUFREQ_WAVE_DEBUG
-	pr_info("[WAVE] suspend : old_min = %u / old_max = %u / new_min = %u / new_max = %u \n",
-			dbs_tuners_ins.current_limit_min,
-			dbs_tuners_ins.current_limit_max,
-			dbs_tuners_ins.min_screen_off,
-			dbs_tuners_ins.max_screen_off
-		);
-	#endif
-	dbs_tuners_ins.current_screen_state = SCREEN_OFF;
-	reapply_limits();
-	return;
-}
-
-static void cpufreq_wave_resume(struct power_suspend * h)
-{
-	dbs_tuners_ins.current_screen_state = SCREEN_ON;
-
-	if(dbs_tuners_ins.wakeup_kick_delay == WAKEUP_KICK_DISABLED) {
-		#ifdef CPUFREQ_WAVE_DEBUG
-		pr_info("[WAVE] resume (no wakeup kick) : old_min = %u / old_max = %u / new_min = %u / new_max = %u \n",
-				dbs_tuners_ins.current_limit_min,
-				dbs_tuners_ins.current_limit_max,
-				dbs_tuners_ins.min_screen_on,
-				dbs_tuners_ins.max_screen_on
-			);
-		#endif
-		dbs_tuners_ins.wakeup_kick_active = WAKEUP_KICK_INACTIVE;
-	} else {
-		#ifdef CPUFREQ_WAVE_DEBUG
-		pr_info("[WAVE] resume (with wakeup kick) : old_min = %u / old_max = %u / new_min = %u / new_max = %u \n",
-				dbs_tuners_ins.current_limit_min,
-				dbs_tuners_ins.current_limit_max,
-				dbs_tuners_ins.wakeup_kick_freq,
-				max(dbs_tuners_ins.max_screen_on, min(dbs_tuners_ins.max_screen_on, dbs_tuners_ins.wakeup_kick_freq))
-			);
-		#endif
-		dbs_tuners_ins.wakeup_kick_active = WAKEUP_KICK_ACTIVE;
-		/* Schedule delayed work to restore stock scaling min after wakeup kick delay */
-		schedule_delayed_work(&stop_wakeup_kick_work, usecs_to_jiffies(dbs_tuners_ins.wakeup_kick_delay * 1000));
-	}
-	reapply_limits();
-	return;
-}
-
-static struct power_suspend cpufreq_wave_suspend_data =
-{
-	.suspend = cpufreq_wave_suspend,
-	.resume = cpufreq_wave_resume,
-};
-#endif
 
 /* keep track of frequency transitions */
 static int dbs_cpufreq_notifier(struct notifier_block *nb, unsigned long val,
@@ -339,13 +195,6 @@ show_one(up_threshold, up_threshold);
 show_one(down_threshold, down_threshold);
 show_one(ignore_nice_load, ignore_nice);
 show_one(freq_step, freq_step);
-show_one(max_screen_on, max_screen_on);
-//show_one(max_screen_off, max_screen_off);
-//show_one(min_screen_on, min_screen_on);
-//show_one(min_screen_off, min_screen_off);
-//show_one(current_limit_max, current_limit_max);
-//show_one(current_limit_min, current_limit_min);
-//show_one(wakeup_kick_freq, wakeup_kick_freq);
 
 static ssize_t store_sampling_down_factor(struct kobject *a,
 					  struct attribute *b,
@@ -355,12 +204,58 @@ static ssize_t store_sampling_down_factor(struct kobject *a,
 	int ret;
 	ret = sscanf(buf, "%u", &input);
 
-	if (ret != 1 || input > MAX_SAMPLING_DOWN_FACTOR || input < 1)
+	if (ret != 1 || input > DEF_MAX_SAMPLING_DOWN_FACTOR || input < 1)
 		return -EINVAL;
 
 	dbs_tuners_ins.sampling_down_factor = input;
 	return count;
 }
+
+
+static void update_sampling_rate(unsigned int new_rate)
+{
+	int cpu;
+
+	dbs_tuners_ins.sampling_rate = new_rate
+				     = max(new_rate, min_sampling_rate);
+
+	get_online_cpus();
+	for_each_online_cpu(cpu) {
+		struct cpufreq_policy *policy;
+		struct cpu_dbs_info_s *dbs_info;
+		unsigned long next_sampling, appointed_at;
+
+		policy = cpufreq_cpu_get(cpu);
+		if (!policy)
+			continue;
+		dbs_info = &per_cpu(cs_cpu_dbs_info, policy->cpu);
+		cpufreq_cpu_put(policy);
+
+		mutex_lock(&dbs_info->timer_mutex);
+
+		if (!delayed_work_pending(&dbs_info->work)) {
+			mutex_unlock(&dbs_info->timer_mutex);
+			continue;
+		}
+
+		next_sampling  = jiffies + usecs_to_jiffies(new_rate);
+		appointed_at = dbs_info->work.timer.expires;
+
+		if (time_before(next_sampling, appointed_at)) {
+
+			mutex_unlock(&dbs_info->timer_mutex);
+			cancel_delayed_work_sync(&dbs_info->work);
+			mutex_lock(&dbs_info->timer_mutex);
+
+			queue_delayed_work_on(dbs_info->cpu, dbs_wq,
+				&dbs_info->work, usecs_to_jiffies(new_rate));
+
+		}
+		mutex_unlock(&dbs_info->timer_mutex);
+	}
+	put_online_cpus();
+}
+
 
 static ssize_t store_sampling_rate(struct kobject *a, struct attribute *b,
 				   const char *buf, size_t count)
@@ -372,7 +267,8 @@ static ssize_t store_sampling_rate(struct kobject *a, struct attribute *b,
 	if (ret != 1)
 		return -EINVAL;
 
-	dbs_tuners_ins.sampling_rate = max(input, min_sampling_rate);
+	//dbs_tuners_ins.sampling_rate = max(input, min_sampling_rate);
+	update_sampling_rate(input);
 	return count;
 }
 
@@ -458,157 +354,12 @@ static ssize_t store_freq_step(struct kobject *a, struct attribute *b,
 	return count;
 }
 
-static ssize_t store_max_screen_on(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
-{
-
-	unsigned int new_limit, i;
-
-	struct cpufreq_frequency_table *table;
-
-	if (!sscanf(buf, "%du", &new_limit))
-		return -EINVAL;
-
-	if (new_limit == dbs_tuners_ins.max_screen_on)
-		return count;
-
-	table = cpufreq_frequency_get_table(0); /* Get frequency table */
-
-	for (i = 0; (table[i].frequency != CPUFREQ_TABLE_END); i++)
-		if (table[i].frequency == new_limit) {
-			dbs_tuners_ins.max_screen_on = new_limit;
-			/* Wakeup kick can never be higher than CPU max. */
-			if(dbs_tuners_ins.max_screen_on < dbs_tuners_ins.wakeup_kick_freq)
-				dbs_tuners_ins.wakeup_kick_freq = dbs_tuners_ins.max_screen_on;
-			reapply_limits();
-			return count;
-		}
-
-	return -EINVAL;
-
-}
-
-static ssize_t store_max_screen_off(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
-{
-
-	unsigned int new_limit, i;
-
-	struct cpufreq_frequency_table *table;
-
-	if (!sscanf(buf, "%du", &new_limit))
-		return -EINVAL;
-
-	if (new_limit == dbs_tuners_ins.max_screen_off)
-		return count;
-
-	table = cpufreq_frequency_get_table(0); /* Get frequency table */
-
-	for (i = 0; (table[i].frequency != CPUFREQ_TABLE_END); i++)
-		if (table[i].frequency == new_limit) {
-			dbs_tuners_ins.max_screen_off = new_limit;
-			reapply_limits();
-			return count;
-		}
-
-	return -EINVAL;
-
-}
-
-static ssize_t store_min_screen_on(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
-{
-
-	unsigned int new_limit, i;
-
-	struct cpufreq_frequency_table *table;
-
-	if (!sscanf(buf, "%du", &new_limit))
-		return -EINVAL;
-
-	if (new_limit == dbs_tuners_ins.min_screen_on)
-		return count;
-
-	table = cpufreq_frequency_get_table(0); /* Get frequency table */
-
-	for (i = 0; (table[i].frequency != CPUFREQ_TABLE_END); i++)
-		if (table[i].frequency == new_limit) {
-			dbs_tuners_ins.min_screen_on = new_limit;
-			/* Wakeup kick can never be higher than CPU max. */
-			if(dbs_tuners_ins.min_screen_on > dbs_tuners_ins.wakeup_kick_freq)
-				dbs_tuners_ins.wakeup_kick_freq = dbs_tuners_ins.min_screen_on;
-			reapply_limits();
-			return count;
-		}
-
-	return -EINVAL;
-
-}
-
-static ssize_t store_min_screen_off(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
-{
-
-	unsigned int new_limit, i;
-
-	struct cpufreq_frequency_table *table;
-
-	if (!sscanf(buf, "%du", &new_limit))
-		return -EINVAL;
-
-	if (new_limit == dbs_tuners_ins.min_screen_off)
-		return count;
-
-	table = cpufreq_frequency_get_table(0); /* Get frequency table */
-
-	for (i = 0; (table[i].frequency != CPUFREQ_TABLE_END); i++)
-		if (table[i].frequency == new_limit) {
-			dbs_tuners_ins.min_screen_off = new_limit;
-			reapply_limits();
-			return count;
-		}
-
-	return -EINVAL;
-
-}
-
-static ssize_t store_wakeup_kick_freq(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
-{
-
-	unsigned int new_wakeup_kick_freq, i;
-
-	struct cpufreq_frequency_table *table;
-
-	if (!sscanf(buf, "%du", &new_wakeup_kick_freq))
-		return -EINVAL;
-
-	if (new_wakeup_kick_freq == dbs_tuners_ins.wakeup_kick_freq)
-		return count;
-
-	/* Only allow values between current screen on limits */
-	if (new_wakeup_kick_freq > dbs_tuners_ins.max_screen_on || new_wakeup_kick_freq < dbs_tuners_ins.min_screen_on)
-		return -EINVAL;
-
-	table = cpufreq_frequency_get_table(0); /* Get frequency table */
-
-	for (i = 0; (table[i].frequency != CPUFREQ_TABLE_END); i++)
-		if (table[i].frequency == new_wakeup_kick_freq) {
-			dbs_tuners_ins.wakeup_kick_freq = new_wakeup_kick_freq;
-			reapply_limits();
-			return count;
-		}
-
-	return -EINVAL;
-
-}
-
 define_one_global_rw(sampling_rate);
 define_one_global_rw(sampling_down_factor);
 define_one_global_rw(up_threshold);
 define_one_global_rw(down_threshold);
 define_one_global_rw(ignore_nice_load);
 define_one_global_rw(freq_step);
-define_one_global_rw(max_screen_on);
-//define_one_global_rw(max_screen_off);
-//define_one_global_rw(min_screen_on);
-//define_one_global_rw(min_screen_off);
-//define_one_global_rw(wakeup_kick_freq);
 
 static struct attribute *dbs_attributes[] = {
 	&sampling_rate_min.attr,
@@ -618,18 +369,10 @@ static struct attribute *dbs_attributes[] = {
 	&down_threshold.attr,
 	&ignore_nice_load.attr,
 	&freq_step.attr,
-	&max_screen_on.attr,
-	//&max_screen_off.attr,
-	//&min_screen_on.attr,
-	//&min_screen_off.attr,
-	//&wakeup_kick_freq.attr,
 	NULL
 };
 
-#ifndef CONFIG_CPU_FREQ_DEFAULT_GOV_WAVE
-static
-#endif
-struct attribute_group dbs_attr_group = {
+static struct attribute_group dbs_attr_group = {
 	.attrs = dbs_attributes,
 	.name = "wave",
 };
@@ -719,7 +462,7 @@ static void dbs_check_cpu(struct cpu_dbs_info_s *this_dbs_info)
 
 		freq_target = (dbs_tuners_ins.freq_step * policy->max) / 100;
 
-		/* max freq cannot be less than 100. But who knows.... */
+		/* max freq cannot be less than 100 */
 		if (unlikely(freq_target == 0))
 			freq_target = 5;
 
@@ -904,24 +647,25 @@ static
 struct cpufreq_governor cpufreq_gov_wave = {
 	.name			= "wave",
 	.governor		= cpufreq_governor_dbs,
-	.max_transition_latency	= TRANSITION_LATENCY_LIMIT,
+	.max_transition_latency	= DEF_TRANSITION_LATENCY_LIMIT,
 	.owner			= THIS_MODULE,
 };
 
 static int __init cpufreq_gov_dbs_init(void)
 {
-#ifdef CONFIG_POWERSUSPEND
-	/* Only register to powersuspend and delayed work if we were able to create the sysfs interface */
-	register_power_suspend(&cpufreq_wave_suspend_data);
-#endif
+	dbs_wq = alloc_workqueue("wave_dbs_wq", WQ_HIGHPRI, 0);
+	if (!dbs_wq) {
+	  printk(KERN_ERR "Failed to create wave_dbs_wq workqueue\n");
+		return -EFAULT;
+	}
+	
 	return cpufreq_register_governor(&cpufreq_gov_wave);
 }
 
 static void __exit cpufreq_gov_dbs_exit(void)
 {
-#ifdef CONFIG_POWERSUSPEND
-	unregister_power_suspend(&cpufreq_wave_suspend_data);
-#endif
+	destroy_workqueue(dbs_wq);
+	
 	cpufreq_unregister_governor(&cpufreq_gov_wave);
 }
 
