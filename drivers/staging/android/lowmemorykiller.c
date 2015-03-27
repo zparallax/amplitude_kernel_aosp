@@ -82,6 +82,7 @@ static int lowmem_minfree[6] = {
 static int lowmem_minfree_size = 4;
 
 static unsigned long lowmem_deathpending_timeout;
+static struct shrink_control lowmem_notif_sc = {GFP_KERNEL, 0};
 
 #define lowmem_print(level, x...)			\
 	do {						\
@@ -179,17 +180,12 @@ struct sysinfo si;
 			return 0;
 	}
 
-<<<<<<< HEAD
-	other_free = global_page_state(NR_FREE_PAGES);
-=======
 #ifdef CONFIG_ZSWAP
 si_swapinfo(&si);
 if (!current_is_kswapd())
 #endif
-
 	lowmem_notif_sc.gfp_mask = sc->gfp_mask;
->>>>>>> f798416...   lowmemorykiller: zswap implementation from linux 3.7+
-
+	
 	nr_cma_free = global_page_state(NR_FREE_CMA_PAGES);
 #ifdef CONFIG_ZSWAP
 	if (!current_is_kswapd() || sc->priority <= 6)
