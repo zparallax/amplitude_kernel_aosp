@@ -31,6 +31,10 @@
 #include <linux/memcontrol.h>
 #include <linux/gfp.h>
 
+#ifdef CONFIG_PKSM
+#include <linux/ksm.h>
+#endif
+
 #include "internal.h"
 
 /* How many pages do we try to swap or page in/out together? */

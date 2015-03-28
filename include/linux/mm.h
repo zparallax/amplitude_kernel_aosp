@@ -19,6 +19,10 @@
 #include <linux/bit_spinlock.h>
 #include <linux/shrinker.h>
 
+#ifdef CONFIG_PKSM
+#include <linux/pksm.h>
+#endif
+
 struct mempolicy;
 struct anon_vma;
 struct file_ra_state;
@@ -935,9 +939,9 @@ struct page *vm_normal_page(struct vm_area_struct *vma, unsigned long addr,
 
 int zap_vma_ptes(struct vm_area_struct *vma, unsigned long address,
 		unsigned long size);
-void zap_page_range(struct vm_area_struct *vma, unsigned long address,
+unsigned long zap_page_range(struct vm_area_struct *vma, unsigned long address,
 		unsigned long size, struct zap_details *);
-void unmap_vmas(struct mmu_gather *tlb,
+unsigned long unmap_vmas(struct mmu_gather *tlb,
 		struct vm_area_struct *start_vma, unsigned long start_addr,
 		unsigned long end_addr, unsigned long *nr_accounted,
 		struct zap_details *);
@@ -1103,20 +1107,14 @@ int __get_user_pages_fast(unsigned long start, int nr_pages, int write,
 /*
  * per-process(per-mm_struct) statistics.
  */
+#if defined(SPLIT_RSS_COUNTING)
+unsigned long get_mm_counter(struct mm_struct *mm, int member);
+#else
 static inline unsigned long get_mm_counter(struct mm_struct *mm, int member)
 {
-	long val = atomic_long_read(&mm->rss_stat.count[member]);
-
-#ifdef SPLIT_RSS_COUNTING
-	/*
-	 * counter is updated in asynchronous manner and may go to minus.
-	 * But it's never be expected number for users.
-	 */
-	if (val < 0)
-		val = 0;
-#endif
-	return (unsigned long)val;
+	return atomic_long_read(&mm->rss_stat.count[member]);
 }
+#endif
 
 static inline void add_mm_counter(struct mm_struct *mm, int member, long value)
 {
@@ -1173,9 +1171,9 @@ static inline void setmax_mm_hiwater_rss(unsigned long *maxrss,
 }
 
 #if defined(SPLIT_RSS_COUNTING)
-void sync_mm_rss(struct mm_struct *mm);
+void sync_mm_rss(struct task_struct *task, struct mm_struct *mm);
 #else
-static inline void sync_mm_rss(struct mm_struct *mm)
+static inline void sync_mm_rss(struct task_struct *task, struct mm_struct *mm)
 {
 }
 #endif

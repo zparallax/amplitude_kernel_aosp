@@ -91,7 +91,7 @@ static inline void ksm_exit(struct mm_struct *mm)
 		__ksm_exit(mm);
 }
 
-#elif defined(CONFIG_UKSM)
+#elif defined(CONFIG_PKSM)
 static inline int ksm_fork(struct mm_struct *mm, struct mm_struct *oldmm)
 {
 	return 0;
@@ -100,7 +100,7 @@ static inline int ksm_fork(struct mm_struct *mm, struct mm_struct *oldmm)
 static inline void ksm_exit(struct mm_struct *mm)
 {
 }
-#endif /* !CONFIG_UKSM */
+#endif /* !CONFIG_PKSM */
 
 #else  /* !CONFIG_KSM */
 
@@ -154,6 +154,6 @@ static inline void ksm_migrate_page(struct page *newpage, struct page *oldpage)
 #endif /* CONFIG_MMU */
 #endif /* !CONFIG_KSM */
 
-#include <linux/uksm.h>
+#include <linux/pksm.h>
 
 #endif /* __LINUX_KSM_H */
